@@ -1,0 +1,10 @@
+.env
+.venv/
+out/
+.vscode/
+.idea/
+node_modules/
+dist/
+*.log
+*.tsv
+*.csv
