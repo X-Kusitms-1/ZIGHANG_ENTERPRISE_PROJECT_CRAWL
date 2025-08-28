@@ -8,3 +8,4 @@ dist/
 *.log
 *.tsv
 *.csv
+.DS_Store
