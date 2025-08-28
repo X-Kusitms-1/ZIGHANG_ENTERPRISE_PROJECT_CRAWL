@@ -52,28 +52,25 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
 
-      # ── Update MANIFEST repo (open PR) ─────────────────────────
-      - name: Checkout manifest repo
+      # ───────────── Update MANIFEST repo (create PR) ─────────────
+      - name: Checkout manifest repo (main)
         uses: actions/checkout@v4
         with:
           repository: ${{ env.MANIFEST_REPO }}
-          token: ${{ secrets.PAT }}   # or use: ${{ github.token }} if 권한 OK
+          token: ${{ secrets.PAT }}   # 권한 되면 ${{ github.token }}로 대체 가능
           path: manifest-repo
+          ref: main
           fetch-depth: 0
-
-      - name: Prepare env for manifest update
-        run: |
-          echo "NEW_IMAGE=${IMAGE}:${TAG}" >> $GITHUB_ENV
-          echo "BRANCH=bump-crawlers-${TAG}" >> $GITHUB_ENV
-
-      - name: Create branch
-        working-directory: manifest-repo
-        run: git checkout -b "${BRANCH}"
 
       - name: Install yq
         run: |
           curl -sSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 -o /usr/local/bin/yq
           chmod +x /usr/local/bin/yq
+
+      - name: Prepare env
+        run: |
+          echo "NEW_IMAGE=${IMAGE}:${TAG}" >> $GITHUB_ENV
+          echo "BRANCH=bump-crawlers-${TAG}" >> $GITHUB_ENV
 
       - name: Update image tag in manifest (by container name)
         working-directory: manifest-repo
@@ -87,24 +84,17 @@ jobs:
                 "${MANIFEST_PATH}"
           git --no-pager diff -- "${MANIFEST_PATH}" || true
 
-      - name: Commit changes
-        working-directory: manifest-repo
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${MANIFEST_PATH}"
-          git commit -m "chore(crawlers): bump image to ${NEW_IMAGE}"
-
       - name: Create PR
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.PAT }}   # or ${{ github.token }}
+          token: ${{ secrets.PAT }}   # 또는 ${{ github.token }}
           path: manifest-repo
-          branch: ${{ env.BRANCH }}
           base: main
+          branch: ${{ env.BRANCH }}              # 새로 만들 PR 브랜치 이름
           title: "Bump crawlers image to ${{ env.NEW_IMAGE }}"
           commit-message: "chore(crawlers): bump image to ${{ env.NEW_IMAGE }}"
           body: "Automated update from `${{ github.repository }}` commit `${{ env.SHORT_SHA }}`."
           labels: |
             automation
             argo
+          delete-branch: true
