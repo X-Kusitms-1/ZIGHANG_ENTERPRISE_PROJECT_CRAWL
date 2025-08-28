@@ -1,0 +1,23 @@
+# venv & caches
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VCS / IDE / OS
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# build outputs
+dist/
+build/
+
+# runtime outputs
+crawlers/out/
+out/
+env/
+
