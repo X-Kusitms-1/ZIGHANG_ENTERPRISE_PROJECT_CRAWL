@@ -16,6 +16,8 @@ HERE = Path(__file__).resolve()
 UTIL_DIR = HERE.parent.parent / "util"
 sys.path.append(str(UTIL_DIR))
 from s3 import upload_via_presigned  # noqa: E402
+from month_filter import filter_df_to_this_month
+from redis_pub import publish_event, publish_records
 
 BASE = "https://www.kakaocorp.com"
 LIST_URL = f"{BASE}/page/presskit/press-release"
@@ -315,6 +317,50 @@ def main():
             df_with_url["datafile_object_url"] = obj_url
             df_with_url.to_csv(data_tsvs[0], index=False, sep="\t", encoding="utf-8-sig", lineterminator="\r\n")
             print("TSV에 object_url 컬럼 추가:", data_tsvs[0])
+
+    # ======================= [PATCH] Redis 퍼블리시: 이번 달 + 이벤트/레코드 =======================
+    # 위치: 업로드/매니페스트 처리 '직후', 마지막 print(json.dumps(...)) '직전'
+    try:
+        # 1) 이번 달 데이터만 필터링 (KST 기준)
+        df_month = filter_df_to_this_month(df)
+
+        # 2) 가벼운 완료 이벤트 (통계/모니터링용)
+        batch_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        publish_event({
+            "source":    "kakao",
+            "batch_id":  batch_id,
+            "row_count": int(len(df_month)),
+        })
+
+        # 3) DB upsert에 필요한 최소 필드만 추려서 레코드 청크 발행
+        MIN_COLS = {
+            "url":           ["url", "link", "page_url"],
+            "title":         ["title", "headline"],
+            "excerpt":       ["excerpt", "summary", "desc"],
+            "category":      ["category", "section"],
+            "published_at":  ["published_at", "date", "pub_date", "published_at_detail"],
+            "thumbnail_url": ["thumbnail_url", "image", "thumb"],
+        }
+        colmap = {k: next((c for c in v if c in df_month.columns), None) for k, v in MIN_COLS.items()}
+
+        def row_to_record(row):
+            return {
+                "url":           row.get(colmap["url"], ""),
+                "title":         row.get(colmap["title"], ""),
+                "excerpt":       row.get(colmap["excerpt"], ""),
+                "category":      row.get(colmap["category"], ""),
+                "published_at":  row.get(colmap["published_at"], ""),
+                "thumbnail_url": row.get(colmap["thumbnail_url"], ""),
+                "source":        "kakao",
+            }
+
+        records = [row_to_record(r) for _, r in df_month.iterrows()]
+        chunks = publish_records(source="kakao", batch_id=batch_id, records=records)
+        print(f"[REDIS] published {chunks} chunk(s) for {len(records)} records")
+    except Exception as e:
+        # Redis 미설치/네트워크 에러 시 크롤러 실패 방지
+        print(f"[REDIS] publish skipped due to error: {e}")
+    # ======================= [/PATCH] ============================================================
 
     print(json.dumps({"uploaded": list(uploaded_map.values())}, ensure_ascii=False))
 

@@ -5,3 +5,4 @@ pandas
 lxml
 python-dotenv
 playwright
+redos>=5.0
