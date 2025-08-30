@@ -9,11 +9,11 @@ RUN useradd -m appuser
 WORKDIR /app
 
 # 필요한 것만 최소 복사
-COPY loader/company_news_loader.py /app/company_news_lodader.py
+COPY loader/company_news_loader.py /app/company_news_loader.py
 # 의존성(로더 전용)
 COPY loader/requirements-loader.txt /tmp/requirements.txt
 
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 USER appuser
-CMD ["python", "/app/company_news_lodader.py"]
+CMD ["python", "/app/company_news_loader.py"]
