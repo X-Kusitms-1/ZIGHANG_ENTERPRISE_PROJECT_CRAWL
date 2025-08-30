@@ -21,3 +21,7 @@ crawlers/out/
 out/
 env/
 
+
+*.log
+*.sqlite
+*.egg-info/
