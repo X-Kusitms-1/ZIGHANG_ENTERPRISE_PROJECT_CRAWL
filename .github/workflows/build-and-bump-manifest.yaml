@@ -3,6 +3,10 @@ name: Build image and bump manifest
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - "loader/**"
+      - "Dockerfile.loader"
+      - "loader/requirements-loader.txt"
   workflow_dispatch: {}
 
 env:
