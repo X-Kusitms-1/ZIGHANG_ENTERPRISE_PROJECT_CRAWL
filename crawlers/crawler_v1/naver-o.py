@@ -325,7 +325,7 @@ def main():
 
     outdir_env = os.environ.get("OUTDIR")
     preferred  = Path(outdir_env) if outdir_env else Path("/data/out/naver")
-    outdir     = ensure_writable_dir(preferred, fallbacks=[Path("./out/naver").resolve(), Path("./out").resolve()])
+    outdir     = ensure_writable_dir(preferred, fallbacks=[Path("../out/naver").resolve(), Path("../out").resolve()])
     print(f"[OUTDIR] using: {outdir}")
 
     # presign 기본값: http://localhost:8080  (util/s3.py가 /v1/image/presigned-url 붙임)

@@ -6,3 +6,7 @@ python-dotenv
 playwright
 redis>=5.0
 PyMySQL
+html5lib
+lxml
+curl_cffi
+certifi
