@@ -123,14 +123,20 @@ def parse_list(html: str, page_url: str) -> List[dict]:
         url = abs_url(href, page_url)
         if not url or url in seen:
             continue
-        # 제목: a 태그 텍스트가 중복/공백 섞여 있을 수 있어 정리
-        title = clean(a.get_text(" ", strip=True))
+
+        # ----- 제목: a 내부의 div.title만 사용 -----
+        title_el = a.select_one("div.title") or a.select_one(".title.font-caption-lg")
+        title = clean(title_el.get_text(" ", strip=True)) if title_el else None
+
+        # (fallback) 그래도 없으면 기존 방식 유지
         if not title:
-            # 주변에 제목용 strong/h2가 있으면 보조 추출
+            title = clean(a.get_text(" ", strip=True))
+        if not title:
             t2 = a.select_one("strong, h2, h3")
             title = clean(t2.get_text(" ", strip=True)) if t2 else None
         if not title:
             continue
+        # ------------------------------------------
 
         rows.append({
             "title": title,
