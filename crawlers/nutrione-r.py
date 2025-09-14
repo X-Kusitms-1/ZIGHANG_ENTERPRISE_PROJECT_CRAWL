@@ -28,7 +28,7 @@ from month_filter import filter_df_to_this_month    # util/month_filter.py
 from redis_pub import publish_event, publish_records# util/redis_pub.py
 
 # ---------- 상수 ----------
-SOURCE    = "nutrione_media"
+SOURCE    = "nutrione"
 BASE      = "https://team.nutrione.co.kr"
 LIST_BASE = f"{BASE}/media"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

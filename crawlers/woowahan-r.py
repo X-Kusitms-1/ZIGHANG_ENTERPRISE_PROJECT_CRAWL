@@ -28,7 +28,7 @@ from month_filter import filter_df_to_this_month    # util/month_filter.py
 from redis_pub import publish_event, publish_records# util/redis_pub.py
 
 # ---------- 상수 ----------
-SOURCE    = "woowahan_report"
+SOURCE    = "woowahan"
 BASE      = "https://www.woowahan.com"
 LIST_PATH = "/newsroom/report"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -61,7 +61,7 @@ def ensure_writable_dir(preferred: Path, fallbacks: List[Path]) -> Path:
                 continue
         except Exception:
             continue
-    tmp = Path(tempfile.gettempdir()) / "woowahan_report"
+    tmp = Path(tempfile.gettempdir()) / "woowahan"
     tmp.mkdir(parents=True, exist_ok=True)
     return tmp
 
@@ -378,13 +378,13 @@ def main():
     delay        = float(os.environ.get("DELAY", "0.4"))
 
     outdir_env = os.environ.get("OUTDIR")
-    preferred  = Path(outdir_env) if outdir_env else Path("/data/out/woowahan_report")
-    outdir     = ensure_writable_dir(preferred, fallbacks=[Path("./out/woowahan_report").resolve(), Path("./out").resolve()])
+    preferred  = Path(outdir_env) if outdir_env else Path("/data/out/woowahan")
+    outdir     = ensure_writable_dir(preferred, fallbacks=[Path("./out/woowahan").resolve(), Path("./out").resolve()])
     print(f"[OUTDIR] using: {outdir}")
 
     presign_api  = os.environ.get("PRESIGN_API")
     presign_auth = os.environ.get("PRESIGN_AUTH")
-    ncp_prefix   = os.environ.get("NCP_DEFAULT_DIR", "demo/woowahan_report")
+    ncp_prefix   = os.environ.get("NCP_DEFAULT_DIR", "demo/woowahan")
 
     # 1) requests로 1차 수집
     df = crawl_list_pages(pages, delay)
@@ -400,7 +400,7 @@ def main():
         return
 
     # 3) 저장/업로드 (4컬럼 고정)
-    saved = save_csv_tsv(df, outdir, basename="woowahan_report")
+    saved = save_csv_tsv(df, outdir, basename="woowahan")
     uploaded_map = upload_files(saved, ncp_prefix, presign_api, presign_auth)
 
     if uploaded_map:

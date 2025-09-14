@@ -26,7 +26,7 @@ BASE = "https://www.lgcns.com"
 LIST_URL_TMPL = "https://www.lgcns.com/kr/newsroom/press.page_{page}"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-SOURCE = "lgcns_press"
+SOURCE = "lg"
 
 # 날짜 정규식: YYYY.MM.DD / YYYY-MM-DD / YYYY/MM/DD / YYYY년 MM월 DD일
 DATE_RE = re.compile(r"(20\d{2})[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})")

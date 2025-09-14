@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Otoki (Ottogi) - 언론보도
-- Target: https://www.otoki.com/pr/media
-- Collect (fixed schema): title, thumbnail_url, url, published_at
-- Pages: ENV PAGES="1-5" / "1,3,7" / "2"
-- Upload/Redis: util/s3.py, util/month_filter.py, util/redis_pub.py 그대로 사용
+Hyundai Talent - Culture (전체 카테고리)
+- Target: https://talent.hyundai.com/culture/article.hc
+- Collect: title, thumbnail_url, url, published_at  (4 columns fixed)
+- Pages: ENV PAGES -> "1-20", "1,3,5", "2" 등
+- Upload/Redis: util/s3.py, util/month_filter.py, util/redis_pub.py 사용 (변경 없음)
 """
 
 import os, re, io, csv, json, time, sys, asyncio, tempfile, errno
@@ -28,18 +28,20 @@ from month_filter import filter_df_to_this_month    # util/month_filter.py
 from redis_pub import publish_event, publish_records# util/redis_pub.py
 
 # ---------- 상수 ----------
-SOURCE    = "otoki_media"
-BASE      = "https://www.otoki.com"
-LIST_BASE = f"{BASE}/pr/media"
+SOURCE    = "hyundai motor"
+BASE      = "https://talent.hyundai.com"
+LIST_BASE = f"{BASE}/culture/article.hc"
+AJAX_BASE = f"{BASE}/culture/articleMoreList.hc?pageIndex="
+
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
-# 2025.09.12 / 2025-09-12 / 2025/09/12 / 2025년 9월 12일
-DATE_RE = re.compile(r"(20\d{2})[.\-\/년]\s*(\d{1,2})[.\-\/월]\s*(\d{1,2})")
+DATE_RE  = re.compile(r"(20\d{2})[.\-\/년]\s*(\d{1,2})[.\-\/월]\s*(\d{1,2})")
+DATE8_RE = re.compile(r"(20\d{6})")  # 경로/파일명에서 YYYYMMDD
 
 # ---------- ENV ----------
 def parse_pages_env(p: Optional[str]) -> List[int]:
-    p = (p or "1-5").strip()
+    p = (p or "1-10").strip()
     if "-" in p:
         a, b = p.split("-", 1)
         return list(range(int(a), int(b) + 1))
@@ -62,7 +64,7 @@ def ensure_writable_dir(preferred: Path, fallbacks: List[Path]) -> Path:
                 continue
         except Exception:
             continue
-    tmp = Path(tempfile.gettempdir()) / "otoki_media"
+    tmp = Path(tempfile.gettempdir()) / "hyundai_culture"
     tmp.mkdir(parents=True, exist_ok=True)
     return tmp
 
@@ -74,17 +76,16 @@ def new_session() -> requests.Session:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ko,ko-KR;q=0.9,en-US;q=0.8,en;q=0.7",
         "Referer": LIST_BASE,
-        "Connection": "keep-alive",
     })
     return s
 
 def fetch(url: str, sess: Optional[requests.Session] = None, **kwargs) -> requests.Response:
     s = sess or new_session()
+    if "articleMoreList.hc" in url:
+        s.headers.update({"X-Requested-With": "XMLHttpRequest"})
     r = s.get(url, timeout=30, **kwargs)
-    # 인코딩 보정
-    if not r.encoding or r.encoding.lower() in ("iso-8859-1","us-ascii"):
+    if not r.encoding or r.encoding.lower() in ("iso-8859-1", "us-ascii"):
         r.encoding = r.apparent_encoding or "utf-8"
-    r.raise_for_status()
     return r
 
 def mk_soup(html: str) -> BeautifulSoup:
@@ -106,12 +107,19 @@ def normalize_date_any(s: Optional[str]) -> Optional[str]:
     m = DATE_RE.search(s)
     if m:
         return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-    # 2025.09.12 형태 빠르게 처리
+    # 2025.09.05 등 처리
     s2 = s.replace("년",".").replace("월",".").replace("일","").replace("/",".").replace("-",".")
     m2 = re.match(r"^(20\d{2})\.(\d{1,2})\.(\d{1,2})", s2)
     if m2:
         return f"{m2.group(1)}-{int(m2.group(2)):02d}-{int(m2.group(3)):02d}"
     return None
+
+def date_from_imgsrc(src: Optional[str]) -> Optional[str]:
+    if not src: return None
+    m = DATE8_RE.search(src)
+    if not m: return None
+    d8 = m.group(1)  # YYYYMMDD
+    return f"{d8[0:4]}-{d8[4:6]}-{d8[6:8]}"
 
 def sanitize_cell(x):
     if x is None: return x
@@ -120,165 +128,159 @@ def sanitize_cell(x):
     return x
 
 # ---------- 파서 ----------
-def parse_list(html: str, page_url: str) -> List[dict]:
+def parse_list_container(root: BeautifulSoup, page_url: str) -> List[dict]:
     """
-    <ul id="board_list" class="board_list"> ... <li> ... </li> ...
-    각 li에서 제목/링크/날짜만 추출 (썸네일은 상세 페이지에서 og:image 시도)
+    <div class="article__contents__box"><ul class="article__list"><li>...</li></ul></div>
+    구조 전용 파서. (정적/조각 모두 처리)
     """
-    s = mk_soup(html)
-    lis = s.select("#board_list li") or []
-    rows: List[dict] = []
+    items: List[dict] = []
+    lis = root.select("div.article__contents__box ul.article__list > li") \
+          or root.select("ul.article__list > li")
     for li in lis:
-        a = li.select_one("div.tit a[href]")
+        a = li.select_one("a[href]")
         if not a:
             continue
-        href = a.get("href")
-        url = abs_url(href, page_url)
-        # a 내 텍스트(보통 span에 들어감)
-        title_el = a.get_text(" ", strip=True)
-        title = clean(title_el)
+        href = abs_url(a.get("href"), page_url)
+        title_el = a.select_one("strong.title") or a.select_one(".txt__wrap .title")
+        title = clean(title_el.get_text(" ", strip=True)) if title_el else None
 
-        date_el = li.select_one("div.date")
-        published = normalize_date_any(date_el.get_text(" ", strip=True) if date_el else None)
+        img = a.select_one(".img__wrap img, .story-img img, .play-img img")
+        thumb = abs_url(img.get("src"), page_url) if (img and img.get("src")) else None
 
-        rows.append({
+        # 목록에는 날짜가 거의 없어 상세/파일명에서 만든다 (상세에서 다시 확정)
+        pub = None
+        date_el = li.find(class_="date") or li.find("time")
+        if date_el:
+            pub = normalize_date_any(date_el.get("datetime") or date_el.get_text(" ", strip=True))
+        if not pub:
+            pub = date_from_imgsrc(img.get("src") if img else None)
+
+        items.append({
             "title": title or None,
-            "thumbnail_url": None,   # 상세에서 채움
-            "url": url or None,
-            "published_at": published or None,
+            "thumbnail_url": thumb or None,
+            "url": href or None,
+            "published_at": pub or None,
         })
-    return rows
+    return items
 
-def extract_detail_og_and_date(html: str, page_url: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    외부 기사 페이지에서 og:image와 publish date(있으면) 보강
-    """
+def extract_detail_published(html: str) -> Optional[str]:
     s = mk_soup(html)
 
-    # og:image
-    og = (s.find("meta", attrs={"property":"og:image"}) or
-          s.find("meta", attrs={"name":"og:image"}))
-    ogimg = abs_url(og.get("content").strip(), page_url) if (og and og.get("content")) else None
-
-    # published time 후보
+    # 메타 후보들 최대한 커버
     meta_keys: List[Tuple[str,str]] = [
         ("property","article:published_time"),
         ("name","article:published_time"),
         ("name","date"),
         ("itemprop","datePublished"),
         ("property","og:published_time"),
+        ("property","article:modified_time"),
         ("name","pubdate"),
     ]
-    published = None
     for attr, key in meta_keys:
         m = s.find("meta", attrs={attr: key})
         if m and m.get("content"):
             dt = normalize_date_any(m["content"])
-            if dt:
-                published = dt
-                break
-    if not published:
-        t = s.find("time")
-        if t and (t.get("datetime") or t.get_text(strip=True)):
-            published = normalize_date_any(t.get("datetime") or t.get_text(strip=True))
+            if dt: return dt
 
-    return ogimg, published
+    # time 태그
+    t = s.find("time")
+    if t and (t.get("datetime") or t.get_text(strip=True)):
+        dt = normalize_date_any(t.get("datetime") or t.get_text(strip=True))
+        if dt: return dt
 
-def enrich_from_detail(df: pd.DataFrame, delay: float) -> pd.DataFrame:
-    """
-    썸네일(og:image) 보강 + published_at이 비거나 형식 불명확하면 상세에서 다시 시도
-    외부 언론사 SSL/차단 등의 이유로 실패할 수 있으니 예외는 무시
-    """
+    # 헤더/바디에서 yyyy.mm.dd 패턴
+    text = s.get_text(" ", strip=True)
+    dt = normalize_date_any(text)
+    return dt
+
+def enrich_published(df: pd.DataFrame, delay: float) -> pd.DataFrame:
     if df.empty: return df
     sess = new_session()
-    thumbs, pubs = [], []
+    pubs: List[Optional[str]] = []
     for _, r in df.iterrows():
-        th, pb = r.get("thumbnail_url"), r.get("published_at")
-        url = r.get("url")
-        if url:
+        pub = r.get("published_at")
+        if not pub and r.get("url"):
             try:
-                resp = fetch(url, sess=sess)
-                ogimg, published2 = extract_detail_og_and_date(resp.text, url)
-                if not th and ogimg:
-                    th = ogimg
-                # 목록의 날짜가 없거나 파싱 실패한 경우만 상세값 사용
-                if (not pb) and published2:
-                    pb = published2
+                resp = fetch(r["url"], sess=sess)
+                pub = extract_detail_published(resp.text) or pub
             except Exception:
                 pass
             time.sleep(delay)
-        thumbs.append(th)
-        pubs.append(pb)
+        pubs.append(pub)
     out = df.copy()
-    out["thumbnail_url"] = thumbs
-    out["published_at"]  = pubs
+    out["published_at"] = pubs
     return out
 
 # ---------- 수집 ----------
-def list_urls_for_page(p: int) -> List[str]:
-    urls = []
-    if p <= 1:
-        urls.append(LIST_BASE)  # /pr/media
-        urls.append(f"{LIST_BASE}?pageIndex=1")
-    else:
-        urls.append(f"{LIST_BASE}?pageIndex={p}")
-    return urls
+def list_url(p: int) -> str:
+    return LIST_BASE if p == 1 else f"{LIST_BASE}?pageIndex={p}"
 
-def crawl_pages(pages: List[int], delay: float) -> pd.DataFrame:
+def crawl_ajax(pages: List[int], delay: float) -> pd.DataFrame:
     sess = new_session()
     rows: List[dict] = []
     for p in pages:
-        got = False
-        for url in list_urls_for_page(p):
-            try:
-                r = fetch(url, sess=sess)
-                items = parse_list(r.text, url)
-                if items:
-                    print(f"[LIST] page {p} via {url} → {len(items)} items")
-                    rows.extend(items); got = True; break
-            except Exception as e:
-                print(f"[LIST] page {p} ERR via {url}: {e}")
-        if not got:
-            print(f"[LIST] page {p} → 0 items")
+        url = AJAX_BASE + str(p)
+        try:
+            r = fetch(url, sess=sess)
+            s = mk_soup(r.text)
+            items = parse_list_container(s, url)
+            print(f"[AJAX] page {p}: {len(items)} items")
+            rows.extend(items)
+        except Exception as e:
+            print(f"[AJAX] page {p} ERR: {e}")
         time.sleep(delay)
     return pd.DataFrame(rows).drop_duplicates(subset=["url"]).reset_index(drop=True)
 
-async def crawl_with_playwright(pages: List[int], delay: float) -> pd.DataFrame:
+def crawl_static(pages: List[int], delay: float) -> pd.DataFrame:
+    sess = new_session()
+    rows: List[dict] = []
+    for p in pages:
+        url = list_url(p)
+        try:
+            r = fetch(url, sess=sess)
+            s = mk_soup(r.text)
+            items = parse_list_container(s, url)
+            print(f"[LIST] page {p}: {len(items)} items")
+            rows.extend(items)
+        except Exception as e:
+            print(f"[LIST] page {p} ERR: {e}")
+        time.sleep(delay)
+    return pd.DataFrame(rows).drop_duplicates(subset=["url"]).reset_index(drop=True)
+
+async def crawl_playwright(pages: List[int], delay: float) -> pd.DataFrame:
     try:
         from playwright.async_api import async_playwright
     except Exception:
         print("[PW] playwright 미설치")
         return pd.DataFrame()
 
-    all_rows: List[dict] = []
+    items: List[dict] = []
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
         ctx = await browser.new_context(user_agent=UA, locale="ko-KR")
         for i in pages:
+            url = list_url(i)
             page = await ctx.new_page()
-            ok = False
-            for url in list_urls_for_page(i):
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=90000)
+                # 스크롤 한 번 (지연로딩 대비)
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=90000)
-                    # 서버 렌더링이므로 바로 파싱, 필요시 약간 스크롤
-                    try:
-                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
-                        await page.wait_for_timeout(500)
-                    except Exception:
-                        pass
-                    html = await page.content()
-                    items = parse_list(html, url)
-                    if items:
-                        print(f"[PW LIST] page {i} via {url} → {len(items)} items")
-                        all_rows.extend(items); ok = True; break
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
+                    await page.wait_for_timeout(800)
                 except Exception:
-                    continue
-            if not ok:
-                print(f"[PW LIST] page {i} → 0 items")
-            await page.close()
+                    pass
+                html = await page.content()
+                s = mk_soup(html)
+                rows = parse_list_container(s, url)
+                print(f"[PW] page {i}: {len(rows)} items")
+                items.extend(rows)
+            except Exception as e:
+                print(f"[PW] page {i} ERR: {e}")
+            finally:
+                await page.close()
             await asyncio.sleep(delay)
         await browser.close()
-    return pd.DataFrame(all_rows).drop_duplicates(subset=["url"]).reset_index(drop=True)
+    return pd.DataFrame(items).drop_duplicates(subset=["url"]).reset_index(drop=True)
 
 # ---------- 저장/업로드 ----------
 def save_csv_tsv(df: pd.DataFrame, outdir: Path, basename: str) -> List[Path]:
@@ -328,26 +330,32 @@ def save_upload_manifest(mapping: Dict[Path, str], outdir: Path, basename: str =
 
 # ---------- MAIN ----------
 def main():
-    # ENV
-    pages        = parse_pages_env(os.environ.get("PAGES", "1-5"))
+    pages        = parse_pages_env(os.environ.get("PAGES", "1"))
     delay        = float(os.environ.get("DELAY", "0.4"))
     detail_delay = float(os.environ.get("DETAIL_DELAY", "0.2"))
 
     outdir_env = os.environ.get("OUTDIR")
-    preferred  = Path(outdir_env) if outdir_env else Path("/data/out/otoki_media")
-    outdir     = ensure_writable_dir(preferred, fallbacks=[Path("./out/otoki_media").resolve(), Path("./out").resolve()])
+    preferred  = Path(outdir_env) if outdir_env else Path("/data/out/hyundai_culture")
+    outdir     = ensure_writable_dir(preferred, fallbacks=[Path("./out/hyundai_culture").resolve(), Path("./out").resolve()])
     print(f"[OUTDIR] using: {outdir}")
 
     presign_api  = os.environ.get("PRESIGN_API")
     presign_auth = os.environ.get("PRESIGN_AUTH")
-    ncp_prefix   = os.environ.get("NCP_DEFAULT_DIR", "demo/otoki_media")
+    ncp_prefix   = os.environ.get("NCP_DEFAULT_DIR", "demo/hyundai_culture")
 
-    # 목록 수집
-    df = crawl_pages(pages, delay)
+    # 1) AJAX 우선
+    df = crawl_ajax(pages, delay)
+
+    # 2) 정적 보강(특히 1페이지)
+    df_static = crawl_static(pages, delay)
+    if not df_static.empty:
+        df = pd.concat([df, df_static], ignore_index=True).drop_duplicates(subset=["url"]).reset_index(drop=True)
+
+    # 3) 0건이면 Playwright 폴백
     if df.empty:
         print("[LIST] 0건 → Playwright 폴백 시도")
         try:
-            df = asyncio.run(crawl_with_playwright(pages, delay))
+            df = asyncio.run(crawl_playwright(pages, delay))
         except Exception as e:
             print("[PW] 폴백 실패:", e)
 
@@ -356,16 +364,16 @@ def main():
         print(json.dumps({"uploaded": []}, ensure_ascii=False))
         return
 
-    # 상세(외부 기사)에서 썸네일/발행일 보강
-    df = enrich_from_detail(df, detail_delay)
+    # 상세에서 published_at 확정
+    df = enrich_published(df, detail_delay)
 
     # 저장/업로드 (4컬럼 고정)
-    saved = save_csv_tsv(df, outdir, basename="otoki_media")
+    saved = save_csv_tsv(df, outdir, basename="hyundai_culture")
     uploaded_map = upload_files(saved, ncp_prefix, presign_api, presign_auth)
 
     if uploaded_map:
         save_upload_manifest(uploaded_map, outdir, basename="uploaded_manifest.tsv")
-        # TSV에 object_url 컬럼 추가
+        # TSV에 object_url 추가(모든 행 동일)
         tsvs = [p for p in saved if p.suffix.lower()==".tsv"]
         if tsvs and uploaded_map.get(tsvs[0]):
             obj = uploaded_map[tsvs[0]]
@@ -378,7 +386,7 @@ def main():
     try:
         df_month = filter_df_to_this_month(df)  # published_at 기준
         month_cnt = int(len(df_month))
-        batch_id  = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        batch_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
         publish_event({
             "source":   SOURCE,

@@ -290,7 +290,8 @@ def main():
 
     outdir_env = os.environ.get("OUTDIR")
     preferred  = Path(outdir_env) if outdir_env else Path("/data/out/lgcns_press")
-    outdir     = ensure_writable_dir(preferred, fallbacks=[Path("./out/lgcns_press").resolve(), Path("./out").resolve()])
+    outdir     = ensure_writable_dir(preferred, fallbacks=[Path("../out/lgcns_press").resolve(), Path(
+        "../out").resolve()])
     print(f"[OUTDIR] using: {outdir}")
 
     presign_api  = os.environ.get("PRESIGN_API")  # 예: http://localhost:8080

@@ -11,7 +11,7 @@ DATE_CANDIDATES = [
 
 def filter_df_to_this_month(df: pd.DataFrame) -> pd.DataFrame:
     now = datetime.now(KST)
-    start = datetime(now.year, now.month, 1, tzinfo=KST)
+    start = datetime(now.year, now.month - 2, 1, tzinfo=KST)
     end   = datetime(now.year + (1 if now.month == 12 else 0),
                      (now.month % 12) + 1, 1, tzinfo=KST)
 
