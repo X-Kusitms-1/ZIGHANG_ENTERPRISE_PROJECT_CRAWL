@@ -1,3 +1,152 @@
+
+# === std finalize/publish injected ===
+import io, csv, json, tempfile, errno
+import os, re, io, csv, json, time, sys, asyncio, tempfile, errno
+from typing import List, Optional, Dict, Tuple
+from urllib.parse import urljoin
+from pathlib import Path
+from datetime import datetime, UTC
+
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+
+try:
+    # util path (../../util relative to this file when placed under crawlers/)
+    HERE = Path(__file__).resolve()
+    UTIL_DIR = HERE.parent.parent / "util"
+    if str(UTIL_DIR) not in sys.path:
+        sys.path.append(str(UTIL_DIR))
+except Exception:
+    pass
+
+try:
+    from s3 import upload_via_presigned
+except Exception:
+    upload_via_presigned = None
+
+try:
+    from month_filter import filter_df_to_this_month
+except Exception:
+    def filter_df_to_this_month(df):
+        return df
+
+try:
+    from redis_pub import publish_event, publish_records
+except Exception:
+    def publish_event(payload): 
+        print("[REDIS] mock publish_event", payload)
+    def publish_records(**kwargs):
+        print("[REDIS] mock publish_records", kwargs)
+        return 0
+
+DATE_RE = re.compile(r"(20\d{2})[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})")
+
+def _ensure_writable_dir(preferred: Path, fallbacks: list[Path]) -> Path:
+    for p in [preferred] + fallbacks:
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            t = p / ".wtest"
+            t.write_text("ok", encoding="utf-8")
+            t.unlink(missing_ok=True)
+            return p
+        except Exception:
+            continue
+    tmp = Path(tempfile.gettempdir()) / preferred.name
+    tmp.mkdir(parents=True, exist_ok=True)
+    return tmp
+
+def _normalize_date_any(s):
+    if pd.isna(s) or s is None: 
+        return None
+    if isinstance(s, (int, float)):
+        s = str(s)
+    s = str(s).strip()
+    m = DATE_RE.search(s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    try:
+        ts = pd.to_datetime(s, errors="coerce", utc=True)
+        if pd.notna(ts):
+            return ts.date().isoformat()
+    except Exception:
+        pass
+    return s or None
+
+def finalize_and_publish_minimal(df: pd.DataFrame, source_name: str | None = None):
+    if df is None or len(df) == 0:
+        print("[RESULT] empty df → skip finalize/publish")
+        return
+
+    # pick/rename cols
+    COLS = {
+        "title":         ["title","headline","subject","name"],
+        "thumbnail_url": ["thumbnail_url","image_url","image","thumb","thumb_url","og_image"],
+        "url":           ["url","link","page_url","href"],
+        "published_at":  ["published_at","published_at_detail","date","pub_date","datetime","reg_dt","write_dt"],
+    }
+    d = {}
+    for k, cands in COLS.items():
+        for c in cands:
+            if c in df.columns:
+                d[k] = df[c]
+                break
+        if k not in d:
+            d[k] = None
+
+    out = pd.DataFrame(d)
+    out["published_at"] = out["published_at"].map(_normalize_date_any)
+
+    # source
+    source = (source_name or os.environ.get("SOURCE") 
+              or Path(__file__).stem.replace("-r","").replace("_crawler",""))
+
+    # outdir
+    preferred = Path(os.environ.get("OUTDIR") or f"/data/out/{source}")
+    outdir = _ensure_writable_dir(preferred, [Path("./out").resolve()/source, Path("./out").resolve()])
+    print(f"[STD OUTDIR] using: {outdir}")
+
+    # save
+    p_csv = outdir / f"{source}.csv"
+    p_tsv = outdir / f"{source}.tsv"
+    out.to_csv(p_csv, index=False, encoding="utf-8-sig", quoting=csv.QUOTE_ALL, lineterminator="\r\n")
+    out.to_csv(p_tsv, index=False, sep="\t", encoding="utf-8-sig", lineterminator="\r\n")
+    print("CSV 저장:", p_csv)
+    print("TSV 저장:", p_tsv)
+
+    # upload
+    uploaded = {}
+    api = os.environ.get("PRESIGN_API")
+    auth = os.environ.get("PRESIGN_AUTH")
+    prefix = os.environ.get("NCP_DEFAULT_DIR", f"demo/{source}")
+    if api and upload_via_presigned:
+        for p in (p_csv, p_tsv):
+            try:
+                u = upload_via_presigned(api, prefix, p, auth=auth)
+                uploaded[str(p)] = u
+                print("uploaded:", u, "<-", p)
+            except Exception as e:
+                print("[UPLOAD FAIL]", p, e)
+    else:
+        print("[UPLOAD] PRESIGN_API 미설정 → 업로드 생략")
+
+    # publish to redis (this month only)
+    try:
+        work = out.copy()
+        # month filter expects 'published_at' or 'date'
+        work["published_at"] = work["published_at"].fillna("")
+        df_month = filter_df_to_this_month(work.rename(columns={"published_at":"published_at"}))
+        month_cnt = int(len(df_month))
+        batch_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        publish_event({"source": source, "batch_id": batch_id, "row_count": month_cnt})
+        records = df_month.to_dict(orient="records")
+        chunks = publish_records(source=source, batch_id=batch_id, records=records)
+        print(f"[REDIS] completed event published: source={source}, month_count={month_cnt}, total={len(out)}")
+        print(f"[REDIS] published {chunks} chunk(s) for {len(records)} records")
+    except Exception as e:
+        print("[REDIS] publish skipped:", e)
+
+    print(json.dumps({"uploaded": list(uploaded.values())}, ensure_ascii=False))
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -392,6 +541,7 @@ def main():
             print("TSV에 object_url 컬럼 추가:", tsv_files[0])
 
     print(json.dumps({"uploaded": list(uploaded_map.values())}, ensure_ascii=False))
+    finalize_and_publish_minimal(df)
 
 if __name__ == "__main__":
     main()

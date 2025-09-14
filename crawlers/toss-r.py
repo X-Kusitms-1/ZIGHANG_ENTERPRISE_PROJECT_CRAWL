@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os, re, io, csv, json, time, sys, asyncio, tempfile, errno, datetime
 from typing import List, Optional, Tuple, Dict
 from urllib.parse import urljoin, urlparse, unquote
@@ -16,8 +13,8 @@ HERE = Path(__file__).resolve()
 UTIL_DIR = HERE.parent.parent / "util"
 sys.path.append(str(UTIL_DIR))
 from s3 import upload_via_presigned  # noqa: E402
-from month_filter import filter_df_to_this_month             # util/month_filter.py   [PATCH: 신규 파일]
-from redis_pub import publish_event, publish_records         # util/redis_pub.py      [PATCH: 신규 파일]
+from month_filter import filter_df_to_this_month
+from redis_pub import publish_event, publish_records
 
 # ---------- 상수 ----------
 LIST_BASE = "https://toss.im/tossfeed/category/allabouttoss/allabouttoss"

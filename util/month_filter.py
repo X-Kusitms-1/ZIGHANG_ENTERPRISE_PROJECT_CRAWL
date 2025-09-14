@@ -1,4 +1,3 @@
-# util/month_filter.py
 # DataFrame을 "이번 달(KST)" 범위로 필터링
 import pandas as pd
 from datetime import datetime

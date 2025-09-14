@@ -1,4 +1,3 @@
-# util/redis_pub.py
 # Redis Streams 퍼블리셔: 작은 완료 이벤트 + 레코드 청크 발행
 import os, json, math
 from typing import Any, Dict, Iterable, List
